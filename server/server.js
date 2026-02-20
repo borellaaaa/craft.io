@@ -196,14 +196,62 @@ function inventoryCount(inv, itemId) {
 // ══════════════════════════════════════════
 // SERVER HTTP (serve o frontend)
 // ══════════════════════════════════════════
+
+// Procura o index.html em vários locais possíveis
+function findClientDir() {
+  const candidates = [
+    path.join(__dirname, '..', 'client'),   // estrutura server/ + client/
+    path.join(__dirname, 'client'),          // tudo na mesma pasta
+    path.join(__dirname, '..'),              // index.html na raiz
+    __dirname,                               // index.html junto com server.js
+  ];
+  for (const dir of candidates) {
+    if (fs.existsSync(path.join(dir, 'index.html'))) {
+      console.log(`[HTTP] Servindo frontend de: ${dir}`);
+      return dir;
+    }
+  }
+  console.warn('[HTTP] AVISO: index.html não encontrado! Coloque-o na pasta client/');
+  return path.join(__dirname, '..', 'client');
+}
+
+const CLIENT_DIR = findClientDir();
+
 const server = http.createServer((req, res) => {
-  let filePath = req.url === '/' ? '/index.html' : req.url;
-  // Só serve arquivos do client/
-  filePath = path.join(__dirname, '..', 'client', filePath);
-  const ext = path.extname(filePath);
-  const mime = { '.html':'text/html', '.js':'application/javascript', '.css':'text/css', '.png':'image/png', '.ico':'image/x-icon' };
+  // Remove query string e normaliza
+  let urlPath = req.url.split('?')[0];
+  if (urlPath === '/' || urlPath === '') urlPath = '/index.html';
+
+  // Segurança: impede path traversal (ex: ../../etc/passwd)
+  const safePath = path.normalize(urlPath).replace(/^(\.\.(\/|\\|$))+/, '');
+  const filePath = path.join(CLIENT_DIR, safePath);
+
+  // Garante que está dentro do CLIENT_DIR
+  if (!filePath.startsWith(CLIENT_DIR)) {
+    res.writeHead(403); res.end('Forbidden'); return;
+  }
+
+  const ext = path.extname(filePath).toLowerCase();
+  const mime = {
+    '.html': 'text/html; charset=utf-8',
+    '.js':   'application/javascript',
+    '.css':  'text/css',
+    '.png':  'image/png',
+    '.jpg':  'image/jpeg',
+    '.ico':  'image/x-icon',
+    '.json': 'application/json',
+  };
+
   fs.readFile(filePath, (err, data) => {
-    if (err) { res.writeHead(404); res.end('Not found'); return; }
+    if (err) {
+      // Qualquer rota não encontrada → serve o index.html (SPA fallback)
+      fs.readFile(path.join(CLIENT_DIR, 'index.html'), (err2, data2) => {
+        if (err2) { res.writeHead(404); res.end('index.html não encontrado. Verifique a estrutura de pastas.'); return; }
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(data2);
+      });
+      return;
+    }
     res.writeHead(200, { 'Content-Type': mime[ext] || 'text/plain' });
     res.end(data);
   });
