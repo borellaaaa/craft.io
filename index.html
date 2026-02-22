@@ -560,6 +560,7 @@ body{background:#000;overflow:hidden;font-family:'Cinzel',serif;color:#e8d8a0;us
 ══════════════════════════════════════════════════ -->
 <script>
 "use strict";
+const var_border = '#4a2a6a';
 
 // ════════════════════════════════════════════
 // DADOS BASE
@@ -1413,16 +1414,21 @@ function tryInteractKey(){
       }
     }
   } else {
-    // Procura estrutura próxima
+    // Procura estrutura próxima — usa centro da estrutura em pixels
     const p=G.player;
     const chunks=getVisibleChunks(G.camera.x,G.camera.y,G.W,G.H);
     for(const ch of chunks){
       for(const s of ch.structs){
-        const sx=s.wx*TILE,sy=s.wy*TILE;
-        const dist=Math.hypot(sx-p.x,sy-p.y);
-        if(dist<80){enterBuilding(s);return;}
+        // Centro da estrutura em pixels
+        const centerX = s.wx*TILE + (s.def.w*TILE)/2;
+        const centerY = s.wy*TILE + (s.def.h*TILE)/2;
+        const dist=Math.hypot(centerX-p.x,centerY-p.y);
+        // Range = metade do tamanho da estrutura + 80px de margem
+        const enterRange = (s.def.w*TILE)/2 + 80;
+        if(dist<enterRange){enterBuilding(s);return;}
       }
     }
+    showNotif('Nenhuma estrutura próxima. Chegue mais perto e pressione F.','dmg');
   }
 }
 
@@ -1590,9 +1596,15 @@ function update(){
   // ── ÁGUA ──
   const wx=Math.floor(p.x/TILE),wy=Math.floor(p.y/TILE);
   G.onWater=isWaterTile(wx,wy);
-  if(G.onWater&&p.water<100){p.water=Math.min(100,p.water+0.5);showNotif('💧 Bebendo água...','water');}
-  if(G.tick%200===0&&!G.onWater){p.water=Math.max(0,p.water-3);}
-  if(p.water<=0&&G.tick%60===0){p.hp-=3;showNotif('⚠ Morrendo de sede!','dmg');spawnParticles(p.x,p.y,'#2288dd',4);}
+  // Hidrata em cima de água
+  if(G.onWater&&p.water<100){
+    p.water=Math.min(100,p.water+0.3);
+    if(G.tick%80===0)showNotif('💧 Bebendo água...','water');
+  }
+  // Sede cai devagar: 1 ponto a cada ~30s (600 ticks)
+  if(G.tick%600===0&&!G.onWater){p.water=Math.max(0,p.water-1);}
+  // Dano só quando totalmente sem água
+  if(p.water<=0&&G.tick%120===0){p.hp-=2;if(G.tick%240===0)showNotif('⚠ Morrendo de sede!','dmg');spawnParticles(p.x,p.y,'#2288dd',4);}
 
   // ── FOME ──
   if(G.tick%300===0){p.hunger=Math.max(0,p.hunger-1);if(p.hunger===0)p.hp=Math.max(0,p.hp-2);}
@@ -1662,7 +1674,7 @@ function render(){
     const sx=b.wx*TILE-cam.x+W/2,sy=b.wy*TILE-cam.y+H/2;
     if(sx<-TILE||sx>W+TILE||sy<-TILE||sy>H+TILE)continue;
     c.fillStyle='#2a1840';c.fillRect(sx,sy,TILE,TILE);
-    c.strokeStyle=var_border;c.strokeRect(sx,sy,TILE,TILE);
+    c.strokeStyle='#4a2a6a';c.strokeRect(sx,sy,TILE,TILE);
     c.font=`${TILE*.6}px serif`;c.textAlign='center';c.textBaseline='middle';
     c.fillText(ITEMS_DB[b.itemId]?.icon||'?',sx+TILE/2,sy+TILE/2);
   }
@@ -1854,7 +1866,7 @@ function renderMob(c,sx,sy,mob){
 }
 
 // ── Minimap ──
-const var_border='#4a2a6a';
+// var_border declarado acima
 function renderMinimap(){
   const mm=G.mmctx,mw=144,mh=144;
   mm.clearRect(0,0,mw,mh);mm.fillStyle='#08050a';mm.fillRect(0,0,mw,mh);
@@ -1875,7 +1887,7 @@ function renderMinimap(){
   for(const mob of G.mobs){const bx=(mob.x/TILE-ox)*scale,by=(mob.y/TILE-oy)*scale;if(bx<0||bx>mw||by<0||by>mh)continue;mm.fillStyle='#ff4400';mm.fillRect(bx-1,by-1,3,3);}
   mm.fillStyle='#ff3300';mm.beginPath();mm.arc(mw/2,mh/2,4,0,Math.PI*2);mm.fill();
   mm.fillStyle='#fff';mm.beginPath();mm.arc(mw/2,mh/2,2,0,Math.PI*2);mm.fill();
-  mm.strokeStyle=var_border;mm.lineWidth=2;mm.strokeRect(0,0,mw,mh);
+  mm.strokeStyle='#4a2a6a';mm.lineWidth=2;mm.strokeRect(0,0,mw,mh);
 }
 
 // ════════════════════════════════════════════
