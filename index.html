@@ -602,7 +602,7 @@ body{
       <div class="online-badge" id="online-badge">» CONECTANDO... «</div>
       <label>▶ NOME DO HERÓI</label>
       <input type="text" id="player-name-input" placeholder="Seu nome lendário..." maxlength="18" autofocus/>
-      <button class="btn-enter" onclick="enterGame()">▶ ADENTRAR O MUNDO</button>
+      <button class="btn-enter" id="btn-enter" onclick="enterGame()">▶ ADENTRAR O MUNDO</button>
       <div class="login-info">WASD·Mover | CLICK·Atacar | E·Inv | C·Craft | F·Entrar | T·Chat</div>
     </div>
   </div>
@@ -1374,13 +1374,44 @@ function syncInv(arr){
 // ════════════════════════════════════════════
 function connectWS(){
   const proto=location.protocol==='https:'?'wss':'ws';
-  G.ws=new WebSocket(`${proto}://${location.host}`);
-  G.ws.onopen=()=>{G.connected=true;document.getElementById('online-badge').textContent='🟢 SERVIDOR ONLINE';};
-  G.ws.onclose=()=>{G.connected=false;document.getElementById('online-badge').textContent='🔴 DESCONECTADO';};
-  G.ws.onerror=()=>{document.getElementById('online-badge').textContent='🔴 ERRO DE CONEXÃO';};
+  const url=`${proto}://${location.host}`;
+  console.log('[WS] Conectando em',url);
+  try{G.ws=new WebSocket(url);}catch(e){console.error('[WS] Erro ao criar WebSocket:',e);return;}
+  G.ws.onopen=()=>{
+    G.connected=true;
+    const badge=document.getElementById('online-badge');
+    if(badge){badge.textContent='🟢 SERVIDOR ONLINE';badge.style.borderColor='#2a5a1a';badge.style.color='#4aaa2a';}
+    console.log('[WS] Conectado!');
+    // Se já entrou no jogo, reenvia join
+    if(G.playerName&&document.getElementById('login-screen').style.display==='none'){
+      wsSend({type:'join',name:G.playerName});
+    }
+  };
+  G.ws.onclose=(ev)=>{
+    G.connected=false;
+    const badge=document.getElementById('online-badge');
+    if(badge){badge.textContent='🔴 RECONECTANDO...';badge.style.borderColor='#7a1818';badge.style.color='#ff6666';}
+    console.log('[WS] Desconectado. Código:',ev.code,'Razão:',ev.reason);
+    // Reconexão automática após 3s
+    setTimeout(()=>{if(!G.connected)connectWS();},3000);
+  };
+  G.ws.onerror=(e)=>{
+    console.error('[WS] Erro de WebSocket:',e);
+    const badge=document.getElementById('online-badge');
+    if(badge){badge.textContent='🔴 ERRO DE CONEXÃO';badge.style.borderColor='#7a1818';}
+  };
   G.ws.onmessage=e=>{let d;try{d=JSON.parse(e.data);}catch{return;}handleMsg(d);};
 }
-function wsSend(o){if(G.ws&&G.ws.readyState===WebSocket.OPEN)G.ws.send(JSON.stringify(o));}
+function wsSend(o){
+  if(G.ws&&G.ws.readyState===WebSocket.OPEN){
+    G.ws.send(JSON.stringify(o));
+  }else{
+    // Enfileira mensagens importantes para enviar ao reconectar
+    if(o.type==='join'||o.type==='move')return;// move é descartável
+    G._pendingMsgs=G._pendingMsgs||[];
+    if(G._pendingMsgs.length<20)G._pendingMsgs.push(o);
+  }
+}
 
 function handleMsg(d){
   switch(d.type){
@@ -1390,7 +1421,13 @@ function handleMsg(d){
       G.classes=d.classes||CLASSES;
       syncInv(d.inv);G.hotbar=d.hotbar||Array(10).fill(null);
       updateHUD();updatePlayerPanel();drawAvatarCanvas();
-      showNotif('⚔ Entrou no mundo!','craft');break;
+      showNotif('⚔ Entrou no mundo!','craft');
+      // Drena fila de mensagens pendentes
+      if(G._pendingMsgs&&G._pendingMsgs.length){
+        G._pendingMsgs.forEach(m=>wsSend(m));
+        G._pendingMsgs=[];
+      }
+      break;
     case 'players_init':d.players.forEach(p=>G.otherPlayers.set(p.id,p));break;
     case 'player_join':G.otherPlayers.set(d.player.id,d.player);break;
     case 'player_leave':G.otherPlayers.delete(d.id);break;
@@ -2431,7 +2468,18 @@ function initLoginScreen(){
 // ════════════════════════════════════════════
 function enterGame(){
   const name=(document.getElementById('player-name-input').value.trim()||'Guerreiro').substring(0,18);
-  if(!G.connected){showNotif('Aguarde a conexão...','dmg');return;}
+  G.playerName=name;
+  // Se não conectado, mostra aviso mas ENTRA ASSIM MESMO (modo offline)
+  if(!G.connected){
+    const badge=document.getElementById('online-badge');
+    badge.textContent='⚠ SEM SERVIDOR — MODO SOLO';
+    badge.style.borderColor='#aa6600';badge.style.color='#ffaa00';
+    // Tenta reconectar antes de entrar
+    connectWS();
+    setTimeout(()=>{
+      if(!G.connected)console.log('[WARN] Entrando sem servidor');
+    },500);
+  }
   document.getElementById('login-screen').style.display='none';
   document.getElementById('hud').style.display='block';
   G.canvas=document.getElementById('gameCanvas');
@@ -2459,7 +2507,9 @@ function enterGame(){
   G.canvas.addEventListener('mouseup',()=>{G.mouse.down=false;});
   G.canvas.addEventListener('wheel',e=>{G.hotbarIdx=(G.hotbarIdx+(e.deltaY>0?1:-1)+10)%10;updateHotbarUI();});
   document.getElementById('chat-input').addEventListener('keydown',e=>{if(e.key==='Enter'){sendChat();document.getElementById('chat-input').blur();e.preventDefault();}if(e.key==='Escape')document.getElementById('chat-input').blur();e.stopPropagation();});
-  wsSend({type:'join',name});
+  G.playerName=name;
+  if(G.connected){wsSend({type:'join',name});}
+  // Se não conectado, o join será enviado no onopen (reconexão)
   spawnMobs(8);
   updateHotbarUI();
   gameLoop();
@@ -2468,6 +2518,21 @@ function enterGame(){
 document.getElementById('player-name-input').addEventListener('keydown',e=>{if(e.key==='Enter')enterGame();});
 initLoginScreen();
 connectWS();
+// Atualiza badge com progresso de conexão
+let _connTry=0;
+const _connInterval=setInterval(()=>{
+  _connTry++;
+  const badge=document.getElementById('online-badge');
+  if(!badge)return;
+  if(G.connected){clearInterval(_connInterval);return;}
+  const dots='.'.repeat(_connTry%4);
+  badge.textContent=`» CONECTANDO${dots} «`;
+  if(_connTry>10&&!G.connected){
+    badge.textContent='⚠ SERVIDOR OFFLINE — MODO SOLO';
+    badge.style.color='#ffaa44';badge.style.borderColor='#6a4400';
+    clearInterval(_connInterval);
+  }
+},500);
 
 </script>
 
