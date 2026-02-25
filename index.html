@@ -1354,18 +1354,36 @@ function invRemove(itemId,count){
 }
 function invCount(itemId){return G.inv.reduce((t,s)=>t+(s&&s.item_id===itemId?s.count:0),0);}
 function syncInv(arr){
-  // Preserva durabilidade dos itens já existentes
-  G.inv=arr.map((s,i)=>{
-    if(!s)return null;
+  // Mescla o inventário do servidor com o local
+  // Regra: para cada slot, mantém o MAIOR valor (cliente pode ter +itens de baú/mob)
+  const newInv=arr.map((s,i)=>{
+    if(!s)return G.inv?.[i]||null;// se servidor tem null, mantém o que o cliente tem
     const existing=G.inv&&G.inv[i];
-    // Se o item no slot é o mesmo, preserva durabilidade
-    if(existing&&existing.item_id===s.item_id&&existing.dur!=null){
-      return {item_id:s.item_id,count:s.count,dur:existing.dur,maxDur:existing.maxDur};
+    // Mesmo item: mantém o count maior e preserva durabilidade
+    if(existing&&existing.item_id===s.item_id){
+      const count=Math.max(s.count,existing.count);
+      const dur=existing.dur!=null?existing.dur:(getMaxDur(s.item_id)||undefined);
+      const maxDur=existing.maxDur||(getMaxDur(s.item_id)||undefined);
+      return {item_id:s.item_id,count,dur,maxDur};
     }
-    // Novo item — inicializa durabilidade se for equipamento
+    // Item diferente: usa o do servidor, mas inicializa durabilidade
+    if(existing&&existing.item_id&&existing.item_id!==s.item_id){
+      // Servidor substituiu o slot — aceita a versão do servidor
+      const maxD=getMaxDur(s.item_id);
+      return {item_id:s.item_id,count:s.count,dur:maxD||undefined,maxDur:maxD||undefined};
+    }
+    // Slot novo do servidor
     const maxD=getMaxDur(s.item_id);
     return {item_id:s.item_id,count:s.count,dur:maxD||undefined,maxDur:maxD||undefined};
   });
+  // Para slots que o servidor não tem mas o cliente tem (itens locais de baú/mob)
+  // preserva eles se o servidor mandou null
+  for(let i=0;i<INV_SIZE;i++){
+    if(!newInv[i]&&G.inv?.[i]){
+      newInv[i]=G.inv[i];// preserva item local
+    }
+  }
+  G.inv=newInv;
   updateHotbarUI();if(G.invOpen)refreshInvUI();
 }
 
@@ -1450,11 +1468,15 @@ function handleMsg(d){
       if(d.notification)showNotif(d.notification,'craft');refreshCraftUI();updateHUD();break;
     case 'take_damage':G.player.hp-=d.dmg;if(G.player.hp<0)G.player.hp=0;showNotif(`💢 -${d.dmg} HP por ${d.fromName}`,'dmg');spawnParticles(G.player.x,G.player.y,'#ff4444',6);updateHUD();break;
     case 'kill_confirm':
-      const prev=G.player.class_id;
+      {const prev2=G.player.class_id;
       G.player.kills=d.kills;G.player.xp=d.xp;G.player.class_id=d.class_id;G.player.maxHp=d.maxHp;G.player.hp=d.hp;
-      showNotif(d.notification,'kill');
-      if(d.class_id!==prev){showClassPopup(d.class_id);drawAvatarCanvas();}
-      updateHUD();updatePlayerPanel();break;
+      if(d.notification)showNotif(d.notification,'kill');
+      if(d.class_id!==prev2){
+        showClassPopup(d.class_id);drawAvatarCanvas();
+        const nc=CLASSES[d.class_id];
+        if(nc)showNotif(`🌟 Evoluiu para ${nc.name}!`,'lv');
+      }
+      updateHUD();updatePlayerPanel();}break;
     case 'you_died':G.dead=true;G.player.x=d.x;G.player.y=d.y;G.player.hp=d.hp;document.getElementById('death-msg').textContent='Morto por: '+d.killerName;document.getElementById('death-screen').classList.add('show');break;
     case 'stats_update':G.player.hp=d.hp;G.player.hunger=d.hunger;if(d.inv)syncInv(d.inv);updateHUD();break;
     case 'chat':addChat(d.name,d.msg,d.sys?'sys':d.pvp?'pvp':'normal');break;
@@ -1953,24 +1975,27 @@ function openChest(f,cx,cy){
   addChat('','💰 Encontrou um baú!','loot');
 }
 function stealFromChest(chestId,lootIdx,el){
-  // chestId = índice do baú na lista de furniture da estrutura
-  // lootIdx = índice do item dentro do loot do baú
   const def=G.insideBuilding?.def?.interior;
   if(!def)return;
-  // Encontra o baú correto pelo ID
   const chests=def.furniture.filter(f=>f.type==='chest');
   const chest=chests[chestId];
   if(!chest||!chest.loot||!chest.loot[lootIdx])return;
   const loot=chest.loot[lootIdx];
-  if(loot.n<=0)return;
-  // Inicializa estado de roubado se necessário
-  if(!chest._stolen)chest._stolen={};
-  chest._stolen[lootIdx]=true;
-  invAdd(loot.id,loot.n);
-  showNotif(`💰 Roubou: ${ITEMS_DB[loot.id]?.name||loot.id} x${loot.n}`,'loot');
+  if(!loot||loot.n<=0)return;
+  const itemId=loot.id;
+  const amount=loot.n;
+  // Marca como roubado ANTES de adicionar (evita duplo clique)
   loot.n=0;
   el.style.opacity='.25';el.style.cursor='default';el.onclick=null;
-  addChat('',`💰 Pegou ${ITEMS_DB[loot.id]?.name||loot.id}!`,'loot');
+  // Adiciona no inventário LOCAL — não depende do servidor
+  const ok=invAdd(itemId,amount);
+  const itemName=ITEMS_DB[itemId]?.name||itemId;
+  showNotif(`💰 ${itemName} x${amount}`,'loot');
+  addChat('',`💰 Pegou ${itemName} x${amount}!`,'loot');
+  // Força atualização visual do inventário
+  updateHotbarUI();
+  if(G.invOpen)refreshInvUI();
+  if(!ok) showNotif('⚠ Inventário cheio!','dmg');
 }
 function closeChest(){document.getElementById('chest-modal').style.display='none';G.chestOpen=null;}
 
@@ -2086,7 +2111,21 @@ function attackMob(mob){
     G.mobs.splice(G.mobs.indexOf(mob),1);
     showNotif(`💀 Derrotou ${mob.name}!`,'kill');
     spawnParticles(mob.x,mob.y,'#ff8800',12);
-    for(const l of(mob.loot||[]))if(Math.random()<l.c){invAdd(l.id,1);}
+    // Loot do mob vai para o inventário local
+    const lootGained=[];
+    for(const l of(mob.loot||[])){
+      if(Math.random()<l.c){
+        invAdd(l.id,1);
+        lootGained.push(l.id);
+      }
+    }
+    // Notifica o servidor: kill de mob → servidor processa kills/XP/level
+    wsSend({
+      type:'kill_mob',
+      mobName:mob.name,
+      mobXp:mob.xp||5,
+      loot:lootGained
+    });
     updateHotbarUI();if(G.invOpen)refreshInvUI();
     setTimeout(()=>spawnMobs(1),12000);
   }
