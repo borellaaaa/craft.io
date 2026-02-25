@@ -1430,7 +1430,13 @@ function handleMsg(d){
       break;
     case 'players_init':d.players.forEach(p=>G.otherPlayers.set(p.id,p));break;
     case 'player_join':G.otherPlayers.set(d.player.id,d.player);break;
-    case 'player_leave':G.otherPlayers.delete(d.id);break;
+    case 'player_leave':
+      G.otherPlayers.delete(d.id);
+      // Re-renderiza leaderboard sem o jogador que saiu
+      {const lb=document.getElementById('lb-list');if(lb&&lb.innerHTML){const h4=lb.previousElementSibling;if(h4){const cur=parseInt(h4.textContent.match(/\d+/)?.[0]||'1');h4.textContent=`⚔ ONLINE (${Math.max(1,cur-1)})`;}}
+      G.otherPlayers.forEach((op,id)=>{});// trigger re-render na próxima vez
+      }
+      break;
     case 'player_move':if(G.otherPlayers.has(d.id)){G.otherPlayers.get(d.id).x=d.x;G.otherPlayers.get(d.id).y=d.y;}break;
     case 'player_update':G.otherPlayers.set(d.player.id,d.player);break;
     case 'inv_update':syncInv(d.inv);if(d.notification)showNotif(d.notification);break;
@@ -1671,9 +1677,9 @@ function enterBuilding(struct){
   ic.width=G.W;ic.height=G.H;
   G.interiorCanvas=ic;
   G.interiorCtx=ic.getContext('2d');
-  // Posição inicial do jogador no interior: entrada (centro-baixo)
+  // Posição inicial do jogador no interior: centro da tela, ligeiramente abaixo
   G.interiorPX = G.W/2;
-  G.interiorPY = G.H - 160;
+  G.interiorPY = Math.min(G.H - 100, G.H * 0.7);
   document.getElementById('exit-btn').classList.add('show');
   const lbl=document.getElementById('interior-label');
   lbl.textContent='🏠 INTERIOR: '+struct.def.name;
@@ -1784,8 +1790,13 @@ function renderInterior(){
 
   structs_furniture.forEach(f=>{
     const {type,x,y,w,h,icon}=f;
-    // Registra hitbox (exceto cadeira — pode sentar)
-    if(type!=='chair'){G.interiorHitboxes.push({x,y,w,h});}
+    // Registra hitbox para todos os móveis
+    // Cadeiras têm hitbox menor (pode chegar perto mas não passar por cima)
+    if(type==='chair'){
+      G.interiorHitboxes.push({x:x+8,y:y+8,w:w-16,h:h-12});
+    } else {
+      G.interiorHitboxes.push({x,y,w,h});
+    }
     // Sombra
     ic.fillStyle='rgba(0,0,0,.2)';ic.fillRect(x+4,y+4,w,h);
     if(type==='fireplace'){
@@ -1883,14 +1894,17 @@ function renderInterior(){
 
 function tryInteractKey(){
   if(G.insideBuilding){
-    // Procura baú com _screenX definido (próximo ao jogador) no render
+    // 1º tenta abrir baú próximo
     const def=G.insideBuilding.def.interior;
+    let foundChest=false;
     for(const f of def.furniture){
       if(f.type==='chest'&&f._screenX!==undefined){
-        openChest(f,f._screenX,f._screenY);return;
+        openChest(f,f._screenX,f._screenY);
+        foundChest=true;return;
       }
     }
-    showNotif('Chegue mais perto de um baú!','dmg');
+    // 2º se não há baú próximo, sai da estrutura
+    if(!foundChest){exitBuilding();return;}
   } else {
     // Procura estrutura próxima — usa centro da estrutura em pixels
     const p=G.player;
@@ -1978,22 +1992,49 @@ function addChat(name,msg,type='normal'){
 // ════════════════════════════════════════════
 function renderLeaderboard(data){
   const lb=document.getElementById('lb-list');
-  lb.innerHTML=data.slice(0,8).map((e,i)=>{
-    const cls=CLASSES[e.class_id]||CLASSES[0];const me=e.id===G.myId;
-    const av=document.createElement('canvas');av.width=18;av.height=18;
+  // Filtra apenas jogadores online (self + otherPlayers)
+  const onlineIds=new Set([G.myId,...G.otherPlayers.keys()]);
+  const online=data.filter(e=>onlineIds.has(e.id));
+  // Garante que o próprio jogador apareça mesmo sem estar no data
+  if(!online.find(e=>e.id===G.myId)&&G.player.name){
+    online.push({...G.player,id:G.myId});
+  }
+  // Ordena por kills desc
+  online.sort((a,b)=>(b.kills||0)-(a.kills||0));
+  lb.innerHTML=online.slice(0,8).map((e,i)=>{
+    const cls=CLASSES[e.class_id]||CLASSES[0];
+    const me=e.id===G.myId;
     return `<div class="lb-row${me?' lb-me':''}">
       <span class="lb-rank">${i+1}</span>
-      <span style="font-size:12px">${cls.icon}</span>
-      <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${e.name}</span>
-      <span class="lb-score">${e.kills}⚔</span>
+      <span>${cls.icon}</span>
+      <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:'VT323',monospace;font-size:.9rem;letter-spacing:.5px">${e.name}</span>
+      <span class="lb-score">${e.kills||0}⚔</span>
     </div>`;
   }).join('');
+  // Atualiza contagem online
+  const count=online.length;
+  const h4=lb.previousElementSibling;
+  if(h4)h4.textContent=`⚔ ONLINE (${count})`;
 }
 
 // ════════════════════════════════════════════
 // RESPAWN
 // ════════════════════════════════════════════
-function requestRespawn(){G.dead=false;G.player.hp=G.player.maxHp;G.player.hunger=100;G.player.water=100;document.getElementById('death-screen').classList.remove('show');showNotif('↺ Renasceu!','craft');}
+function requestRespawn(){
+  G.dead=false;
+  G.player.hp=G.player.maxHp;
+  G.player.hunger=100;
+  G.player.water=100;
+  // Reseta aggro de todos os mobs
+  G.mobs.forEach(m=>{m.aggroed=false;m.atkCd=60;});
+  // Teleporta para longe dos mobs ao redor
+  G.player.x=(Math.random()-.5)*3000;
+  G.player.y=(Math.random()-.5)*3000;
+  G.camera.x=G.player.x;G.camera.y=G.player.y;
+  document.getElementById('death-screen').classList.remove('show');
+  showNotif('↺ Renasceu!','craft');
+  wsSend({type:'respawn',x:G.player.x,y:G.player.y});
+}
 
 // ════════════════════════════════════════════
 // MOBS
@@ -2073,10 +2114,10 @@ function update(){
 
   if(G.insideBuilding){
     let dx=0,dy=0;
-    if(G.keys['w']||G.keys['ArrowUp'])dy-=1;
-    if(G.keys['s']||G.keys['ArrowDown'])dy+=1;
-    if(G.keys['a']||G.keys['ArrowLeft']){dx-=1;G.facing=-1;}
-    if(G.keys['d']||G.keys['ArrowRight']){dx+=1;G.facing=1;}
+    if(G.keys['w']||G.keys['W']||G.keys['ArrowUp'])dy-=1;
+    if(G.keys['s']||G.keys['S']||G.keys['ArrowDown'])dy+=1;
+    if(G.keys['a']||G.keys['A']||G.keys['ArrowLeft']){dx-=1;G.facing=-1;}
+    if(G.keys['d']||G.keys['D']||G.keys['ArrowRight']){dx+=1;G.facing=1;}
     const jumping=G.keys[' '];// espaço = pular sobre obstáculo
     G.moving=!!(dx||dy);
     if(dx||dy){
@@ -2104,10 +2145,10 @@ function update(){
   }
 
   let dx=0,dy=0;
-  if(G.keys['w']||G.keys['ArrowUp'])dy-=1;
-  if(G.keys['s']||G.keys['ArrowDown'])dy+=1;
-  if(G.keys['a']||G.keys['ArrowLeft']){dx-=1;G.facing=-1;}
-  if(G.keys['d']||G.keys['ArrowRight']){dx+=1;G.facing=1;}
+  if(G.keys['w']||G.keys['W']||G.keys['ArrowUp'])dy-=1;
+  if(G.keys['s']||G.keys['S']||G.keys['ArrowDown'])dy+=1;
+  if(G.keys['a']||G.keys['A']||G.keys['ArrowLeft']){dx-=1;G.facing=-1;}
+  if(G.keys['d']||G.keys['D']||G.keys['ArrowRight']){dx+=1;G.facing=1;}
   G.moving=!!(dx||dy);
   if(dx||dy){const d=Math.hypot(dx,dy);p.x+=dx/d*p.speed;p.y+=dy/d*p.speed;}
   if(G.tick%3===0&&G.connected)wsSend({type:'move',x:p.x,y:p.y});
@@ -2142,15 +2183,43 @@ function update(){
   G.mobs.forEach(mob=>{
     mob.animTick=(mob.animTick||0)+1;
     const ddx=p.x-mob.x,ddy=p.y-mob.y,dist=Math.hypot(ddx,ddy);
-    const aggro=G.dayPhase==='night'?700:450;
-    if(dist<aggro){mob.x+=ddx/dist*mob.speed;mob.y+=ddy/dist*mob.speed;}
-    else{mob.angle+=(Math.random()-.5)*.3;mob.x+=Math.cos(mob.angle);mob.y+=Math.sin(mob.angle);}
-    mob.atkCd--;
-    if(dist<50&&mob.atkCd<=0){mob.atkCd=60;const dmg=Math.max(1,mob.damage-2);p.hp-=dmg;showNotif(`💢 -${dmg} HP — ${mob.name}`,'dmg');spawnParticles(p.x,p.y,'#ff2200',5);if(p.hp<=0){G.dead=true;document.getElementById('death-msg').textContent='Morto por: '+mob.name;document.getElementById('death-screen').classList.add('show');}updateHUD();}
+    const aggroRange = G.dayPhase==='night'?400:260;  // range para INICIAR perseguição
+    const deaggroRange = G.dayPhase==='night'?600:400;// range para PARAR perseguição
+    // Sistema de aggro: uma vez aggroed, persegue até deaggro range
+    if(dist<aggroRange) mob.aggroed=true;
+    if(dist>deaggroRange) mob.aggroed=false;
+    // Dentro de casa: mobs não perseguem
+    if(G.insideBuilding) mob.aggroed=false;
+    if(mob.aggroed && dist>2){
+      mob.x+=ddx/dist*mob.speed;
+      mob.y+=ddy/dist*mob.speed;
+    } else {
+      // Wandering aleatório lento
+      if(Math.random()<0.02) mob.angle=(mob.angle||0)+(Math.random()-.5)*1.5;
+      mob.x+=Math.cos(mob.angle||0)*0.5;
+      mob.y+=Math.sin(mob.angle||0)*0.5;
+    }
+    if(mob.atkCd>0) mob.atkCd--;
+    if(dist<50&&mob.atkCd<=0&&!G.insideBuilding&&!G.dead){
+      mob.atkCd=70;
+      const cls=CLASSES[p.class_id]||CLASSES[0];
+      const dmg=Math.max(1,mob.damage-(cls.defense||0));
+      p.hp-=dmg;
+      showNotif(`💢 -${dmg} HP — ${mob.name}`,'dmg');
+      spawnParticles(p.x,p.y,'#ff2200',5);
+      if(p.hp<=0){
+        G.dead=true;
+        document.getElementById('death-msg').textContent='Morto por: '+mob.name;
+        document.getElementById('death-screen').classList.add('show');
+      }
+      updateHUD();
+    }
   });
 
   G.drops=G.drops.filter(d=>{d.life--;if(Math.hypot(d.x-p.x,d.y-p.y)<55){invAdd(d.id,1);updateHotbarUI();return false;}return d.life>0;});
+  if(G.drops.length>100)G.drops=G.drops.slice(-100);
   G.particles=G.particles.filter(pt=>{pt.x+=pt.vx;pt.y+=pt.vy;pt.vy+=.1;pt.life--;pt.vx*=.95;return pt.life>0;});
+  if(G.particles.length>200)G.particles=G.particles.slice(-200);// cap para evitar leak
 
   updateHUD();
   if(G.tick%100===0)wsSend({type:'ping',t:Date.now()});
@@ -2429,7 +2498,36 @@ function renderMinimap(){
 // ════════════════════════════════════════════
 // GAME LOOP
 // ════════════════════════════════════════════
-function gameLoop(){update();if(!G.insideBuilding)render();requestAnimationFrame(gameLoop);}
+function gameLoop(){
+  if(!G.dead&&!document.hidden){
+    update();
+    if(!G.insideBuilding)render();
+    else renderInterior();
+  } else if(document.hidden){
+    // Em background: roda lógica mínima mas não renderiza
+    G.tick++;G.animTick++;
+    if(G.tick%60===0){
+      const p=G.player;
+      if(G.tick%600===0&&!G.onWater)p.water=Math.max(0,p.water-1);
+      if(G.tick%300===0)p.hunger=Math.max(0,p.hunger-1);
+    }
+  }
+  // Usa setTimeout para não travar em segundo plano
+  // Mas usa rAF quando visível para sincronia com tela
+  if(document.hidden){
+    G._loopTimer=setTimeout(gameLoop,50);// 20fps em bg
+  } else {
+    G._loopRaf=requestAnimationFrame(gameLoop);
+  }
+}
+document.addEventListener('visibilitychange',()=>{
+  if(!document.hidden){
+    // Voltou ao foco: limpa timer e reinicia com rAF
+    clearTimeout(G._loopTimer);
+    // Limpa teclas presas que ficaram de quando saiu
+    G.keys={};G.mouse.down=false;
+  }
+});
 
 // ════════════════════════════════════════════
 // TELA DE LOGIN — decoração
@@ -2491,17 +2589,33 @@ function enterGame(){
   window.addEventListener('resize',()=>{G.W=G.canvas.width=window.innerWidth;G.H=G.canvas.height=window.innerHeight;});
   // Input
   window.addEventListener('keydown',e=>{
-    G.keys[e.key]=true;
-    if(e.key>='1'&&e.key<='9'){G.hotbarIdx=parseInt(e.key)-1;updateHotbarUI();}
-    if(e.key==='0'){G.hotbarIdx=9;updateHotbarUI();}
-    if(e.key==='e'||e.key==='E'){if(!G.craftOpen&&!G.buildOpen)toggleInventory();}
-    if(e.key==='c'||e.key==='C'){if(!G.invOpen&&!G.buildOpen)toggleCraft();}
-    if(e.key==='b'||e.key==='B'){if(!G.invOpen&&!G.craftOpen)toggleBuild();}
-    if(e.key==='f'||e.key==='F'){tryInteractKey();}
-    if(e.key==='Escape'){if(G.invOpen)toggleInventory();if(G.craftOpen)toggleCraft();if(G.buildOpen)toggleBuild();if(G.insideBuilding)exitBuilding();closeChest();}
-    if(e.key==='t'||e.key==='T'){if(!G.invOpen&&!G.craftOpen){document.getElementById('chat-input').focus();e.preventDefault();}}
+    // Normaliza a tecla: armazena versão minúscula + original
+    // Isso resolve CapsLock, Shift etc para teclas de movimento
+    const k=e.key;
+    const kl=k.toLowerCase();
+    G.keys[k]=true;
+    G.keys[kl]=true;// sempre marca também o lower
+    if(k>='1'&&k<='9'){G.hotbarIdx=parseInt(k)-1;updateHotbarUI();}
+    if(k==='0'){G.hotbarIdx=9;updateHotbarUI();}
+    if(kl==='e'&&!G.craftOpen&&!G.buildOpen)toggleInventory();
+    if(kl==='c'&&!G.invOpen&&!G.buildOpen)toggleCraft();
+    if(kl==='b'&&!G.invOpen&&!G.craftOpen)toggleBuild();
+    if(kl==='f')tryInteractKey();
+    if(k==='Escape'){
+      if(G.chestOpen)closeChest();
+      else if(G.insideBuilding)exitBuilding();
+      else if(G.invOpen)toggleInventory();
+      else if(G.craftOpen)toggleCraft();
+      else if(G.buildOpen)toggleBuild();
+    }
+    if(kl==='t'&&!G.invOpen&&!G.craftOpen){document.getElementById('chat-input').focus();e.preventDefault();}
   });
-  window.addEventListener('keyup',e=>{G.keys[e.key]=false;});
+  window.addEventListener('keyup',e=>{
+    G.keys[e.key]=false;
+    G.keys[e.key.toLowerCase()]=false;
+  });
+  // Limpa todas as teclas ao perder o foco (evita "tecla presa")
+  window.addEventListener('blur',()=>{G.keys={};G.mouse.down=false;});
   G.canvas.addEventListener('mousemove',e=>{G.mouse.x=e.clientX;G.mouse.y=e.clientY;});
   G.canvas.addEventListener('mousedown',e=>{G.mouse.down=true;if(G.invOpen||G.craftOpen)return;if(G.selectedBuild){const wx=Math.floor((e.clientX+G.camera.x-G.W/2)/TILE),wy=Math.floor((e.clientY+G.camera.y-G.H/2)/TILE);placeBlock(wx,wy);}else{tryInteract();}});
   G.canvas.addEventListener('mouseup',()=>{G.mouse.down=false;});
@@ -2512,7 +2626,10 @@ function enterGame(){
   // Se não conectado, o join será enviado no onopen (reconexão)
   spawnMobs(8);
   updateHotbarUI();
-  gameLoop();
+  if(!G._loopStarted){
+    G._loopStarted=true;
+    gameLoop();
+  }
 }
 
 document.getElementById('player-name-input').addEventListener('keydown',e=>{if(e.key==='Enter')enterGame();});
