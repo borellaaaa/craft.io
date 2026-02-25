@@ -548,6 +548,14 @@ function handleDisconnect(id) {
   saveInventory(id, cl.inv);
   clients.delete(id);
   broadcast({ type: 'player_leave', id });
+  // Envia leaderboard atualizado imediatamente após saída
+  const onlineLbDisc = [];
+  for (const [oid, cl] of clients) {
+    const p = cl.player;
+    onlineLbDisc.push({ id: p.id, name: p.name, kills: p.kills, level: p.level, class_id: p.class_id });
+  }
+  onlineLbDisc.sort((a, b) => b.kills - a.kills);
+  broadcast({ type: 'leaderboard', data: onlineLbDisc });
   broadcast({ type: 'chat', name: 'SISTEMA', msg: `${cl.player.name} saiu do servidor`, sys: true });
   console.log(`[LEAVE] ${cl.player.name} | Online: ${clients.size}`);
 }
@@ -629,10 +637,15 @@ setInterval(() => {
     }
   }
 
-  // Leaderboard a cada 10s
+  // Leaderboard a cada 10s — SOMENTE JOGADORES ONLINE
   if (tickCount % (TICK_RATE * 10) === 0) {
-    const lb = stmts.listPlayers.all(Math.floor(Date.now() / 1000) - 3600);
-    broadcast({ type: 'leaderboard', data: lb });
+    const onlineLb = [];
+    for (const [oid, cl] of clients) {
+      const p = cl.player;
+      onlineLb.push({ id: p.id, name: p.name, kills: p.kills, level: p.level, class_id: p.class_id });
+    }
+    onlineLb.sort((a, b) => b.kills - a.kills);
+    broadcast({ type: 'leaderboard', data: onlineLb.slice(0, 20) });
   }
 
   // Online count a cada 5s
