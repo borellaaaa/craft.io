@@ -359,6 +359,60 @@ function handleMove(clientData, { x, y }) {
   broadcast({ type: 'player_move', id: clientData.player.id, x, y });
 }
 
+function handleMobKill(clientData, { mobName, mobXp, loot }) {
+  const { player, inv, ws } = clientData;
+  const xpGain = Math.min(50, Math.max(1, parseInt(mobXp) || 5));
+
+  player.kills++;
+  player.xp += xpGain;
+
+  // Processa loot do mob no inventário do servidor também
+  if (Array.isArray(loot)) {
+    for (const itemId of loot) {
+      const cleanId = String(itemId).replace(/[^a-z_0-9]/g, '');
+      if (cleanId) inventoryAdd(inv, cleanId, 1);
+    }
+    clientData.inv = inv;
+  }
+
+  // Verifica evolução de classe
+  const prevClass = player.class_id;
+  const newClass = getClassForKills(player.kills);
+  let leveledUp = false;
+
+  if (newClass.id !== prevClass) {
+    player.class_id = newClass.id;
+    player.maxHp = newClass.maxHp;
+    player.hp = Math.min(player.hp + 30, newClass.maxHp); // recupera um pouco ao subir
+    leveledUp = true;
+    broadcast({
+      type: 'chat',
+      name: 'SISTEMA',
+      msg: `🌟 ${player.name} evoluiu para ${newClass.icon} ${newClass.name}!`,
+      sys: true,
+    });
+  }
+
+  // Responde com estado atualizado
+  send(ws, {
+    type: 'kill_confirm',
+    victimName: mobName,
+    kills: player.kills,
+    xp: player.xp,
+    class_id: player.class_id,
+    maxHp: player.maxHp,
+    hp: player.hp,
+    inv: invToArray(inv),
+    notification: leveledUp
+      ? `🌟 LEVEL UP! → \${newClass.name} | +\${xpGain} XP`
+      : `💀 \${mobName} eliminado! +\${xpGain} XP`,
+  });
+
+  // Salva progresso
+  stmts.upsertPlayer.run({ ...player, last_seen: Math.floor(Date.now() / 1000) });
+  saveInventory(player.id, inv);
+}
+
 function handleHarvest(clientData, { objKey, loot, lootCount }) {
   const { player, inv } = clientData;
   // Valida loot (server define a lógica real — aqui confiamos no cliente com validação mínima)
@@ -375,6 +429,8 @@ function handleHarvest(clientData, { objKey, loot, lootCount }) {
     inv: invToArray(inv),
     notification: `+${count} ${itemId}`,
   });
+  // Salva inventário
+  saveInventory(player.id, inv);
 }
 
 function handleCraft(clientData, { recipeId }) {
@@ -584,6 +640,8 @@ wss.on('connection', (ws, req) => {
     switch (data.type) {
       case 'move':    handleMove(cl, data); break;
       case 'harvest': handleHarvest(cl, data); break;
+      case 'kill_mob': handleMobKill(cl, data); break;
+      case 'respawn': cl.player.x = data.x || (Math.random()-0.5)*3000; cl.player.y = data.y || (Math.random()-0.5)*3000; break;
       case 'craft':   handleCraft(cl, data); break;
       case 'attack':  handleAttack(cl, data); break;
       case 'chat':    handleChat(cl, data); break;
